@@ -1,0 +1,380 @@
+openapi: 3.0.3
+info:
+  title: Check Point Management API — Mock (untuk testing SOAR n8n)
+  version: "1.9-mock"
+  description: |
+    **Ini BUKAN dokumentasi resmi Check Point.** Ini adalah spesifikasi OpenAPI dari
+    mock server yang dibuat untuk testing pribadi. Skema field & alur kerja disusun
+    manual berdasarkan Management API Reference resmi
+    (https://sc1.checkpoint.com/documents/latest/APIs/) dan contoh request/response
+    nyata dari komunitas CheckMates — karena Check Point sendiri tidak menerbitkan
+    file OpenAPI/Swagger untuk Management API.
+
+    Tidak ada jaminan ini identik 100% dengan Management Server asli. Sebelum
+    integrasi produksi, validasi ulang ke Check Point Eval VM atau Cloud Demo Mode.
+servers:
+  - url: http://localhost:4010
+    description: |
+      Mock server lokal. Path di bawah ditulis tanpa version (mis. /web_api/login),
+      sesuai pola paling umum di dokumentasi resmi Check Point. Mock ini JUGA menerima
+      path dengan version eksplisit (mis. /web_api/v1.9/login, /web_api/v1.1/login) —
+      version di path diterima tapi tidak wajib, sama seperti server Check Point asli.
+
+components:
+  securitySchemes:
+    sessionAuth:
+      type: apiKey
+      in: header
+      name: X-chkp-sid
+      description: Session id yang didapat dari response /login
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: string
+          example: generic_err_object_not_found
+        message:
+          type: string
+          example: "Requested object [MyHost] not found"
+      description: |
+        Struktur {code, message} ini VERIFIED — dikonfirmasi dari beberapa laporan
+        request/response nyata pengguna Check Point (lihat komentar ERRORS di server.js
+        untuk sumber per code). Beberapa code spesifik masih INFERRED (mengikuti pola
+        penamaan generic_err_*, belum ada contoh nyata) — lihat tabel error di README.
+
+paths:
+  /web_api/login:
+    post:
+      summary: Login (user/password ATAU api-key)
+      description: |
+        Kirim salah satu:
+        - `{"user": "admin", "password": "admin123"}`
+        - `{"api-key": "test-api-key-12345"}`
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user: { type: string, example: admin }
+                password: { type: string, example: admin123 }
+                api-key: { type: string, example: test-api-key-12345 }
+      responses:
+        "200":
+          description: Login berhasil, dapatkan sid untuk header X-chkp-sid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uid: { type: string }
+                  sid: { type: string }
+                  session-timeout: { type: integer, example: 600 }
+        "400":
+          description: Kredensial salah
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /web_api/logout:
+    post:
+      summary: Logout
+      security: [{ sessionAuth: [] }]
+      responses:
+        "200": { description: OK }
+
+  /web_api/add-host:
+    post:
+      summary: Tambah objek Host (IOC tipe IP)
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, ip-address]
+              properties:
+                name: { type: string, example: Malicious_1.2.3.4 }
+                ip-address: { type: string, example: "1.2.3.4" }
+                comments: { type: string }
+      responses:
+        "200": { description: Host dibuat }
+        "400": { description: Param kurang / sudah ada }
+
+  /web_api/show-host:
+    post:
+      summary: Lihat detail Host
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string } }
+      responses:
+        "200": { description: OK }
+        "404": { description: Tidak ditemukan }
+
+  /web_api/delete-host:
+    post:
+      summary: Hapus objek Host (opsional, untuk unblock IP)
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string } }
+      responses:
+        "200": { description: OK }
+        "404": { description: Tidak ditemukan }
+
+  /web_api/add-dns-domain:
+    post:
+      summary: Tambah objek Domain (IOC tipe Domain)
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, example: .malicious-domain.com }
+                comments: { type: string }
+      responses:
+        "200": { description: Domain object dibuat }
+
+  /web_api/delete-dns-domain:
+    post:
+      summary: Hapus objek Domain (opsional, untuk unblock domain)
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string } }
+      responses:
+        "200": { description: OK }
+
+  /web_api/add-group:
+    post:
+      summary: Tambah Group object
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                comments: { type: string }
+      responses:
+        "200": { description: Group dibuat }
+
+  /web_api/show-group:
+    post:
+      summary: Lihat isi Group (cek member saat ini)
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string, example: Blocked_Domains_Group } }
+      responses:
+        "200": { description: OK }
+
+  /web_api/set-group:
+    post:
+      summary: Tambah/hapus member Group (dipakai untuk block/unblock domain)
+      description: |
+        `members` mendukung 3 bentuk:
+        - array penuh -> replace semua member
+        - `{"add": ["nama_domain"]}` -> tambah tanpa hapus yang lama (BLOCK)
+        - `{"remove": ["nama_domain"]}` -> hapus dari group (UNBLOCK)
+
+        Untuk testing error-handling: tambahkan `"simulate": "locked"` di body untuk
+        memaksa response error "object locked by another session".
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, example: Blocked_Domains_Group }
+                members:
+                  oneOf:
+                    - type: array
+                      items: { type: string }
+                    - type: object
+                      properties:
+                        add: { type: array, items: { type: string } }
+                        remove: { type: array, items: { type: string } }
+      responses:
+        "200": { description: OK }
+
+  /web_api/add-access-rule:
+    post:
+      summary: Tambah access rule baru
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, layer]
+              properties:
+                name: { type: string }
+                layer: { type: string, example: Network }
+                position: { type: string, example: top }
+                source: { type: array, items: { type: string } }
+                destination: { type: array, items: { type: string } }
+                service: { type: array, items: { type: string } }
+                action: { type: string, example: Drop }
+      responses:
+        "200": { description: Rule dibuat }
+
+  /web_api/show-access-rule:
+    post:
+      summary: Lihat detail rule (cek source/destination saat ini)
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string, example: Blocked_IPs_Rule } }
+      responses:
+        "200": { description: OK }
+
+  /web_api/set-access-rule:
+    post:
+      summary: Ubah rule — dipakai untuk block/unblock IP langsung di source rule
+      description: |
+        `source` / `destination` / `service` mendukung 3 bentuk sama seperti set-group:
+        array penuh (replace), `{"add":[...]}` (BLOCK), `{"remove":[...]}` (UNBLOCK).
+
+        Untuk testing error-handling: tambahkan `"simulate": "locked"` di body untuk
+        memaksa response error "object locked by another session" (skenario nyata,
+        terkonfirmasi dari laporan pengguna Check Point — lihat komentar ERRORS di
+        server.js).
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, example: Blocked_IPs_Rule }
+                source:
+                  oneOf:
+                    - type: array
+                      items: { type: string }
+                    - type: object
+                      properties:
+                        add: { type: array, items: { type: string } }
+                        remove: { type: array, items: { type: string } }
+      responses:
+        "200": { description: OK }
+
+  /web_api/delete-access-rule:
+    post:
+      summary: Hapus rule
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string } }
+      responses:
+        "200": { description: OK }
+
+  /web_api/publish:
+    post:
+      summary: Publish perubahan (wajib sebelum install-policy)
+      security: [{ sessionAuth: [] }]
+      responses:
+        "200":
+          description: Task-id publish
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { task-id: { type: string } }
+
+  /web_api/install-policy:
+    post:
+      summary: Install policy ke gateway (ASYNCHRONOUS — harus di-poll via show-task)
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [policy-package, target-name]
+              properties:
+                policy-package: { type: string, example: Standard }
+                target-name: { type: string, example: gw-cluster-1 }
+      responses:
+        "200":
+          description: Task-id install-policy (belum selesai, harus di-poll)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { task-id: { type: string } }
+
+  /web_api/show-task:
+    post:
+      summary: Poll status task (publish / install-policy)
+      description: |
+        Mock ini sengaja butuh minimal 2x panggilan berturut-turut sebelum
+        install-policy berstatus "succeeded" — supaya kamu ketahuan kalau workflow
+        n8n tidak implement polling/wait loop dengan benar.
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [task-id]
+              properties: { task-id: { type: string } }
+      responses:
+        "200":
+          description: Status task saat ini
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        task-id: { type: string }
+                        status:
+                          type: string
+                          enum: ["in progress", "succeeded", "failed"]
+                        progress-percentage: { type: integer }
+
+  /mock/reset:
+    post:
+      summary: "[Khusus mock] Reset seluruh state ke kondisi awal"
+      description: Bukan command resmi Check Point — cuma util untuk restart skenario testing.
+      responses:
+        "200": { description: OK }

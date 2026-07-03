@@ -1,0 +1,16 @@
+services:
+  checkpoint-mock:
+    build: .
+    container_name: checkpoint-mock-api
+    ports:
+      - "4010:4010"
+    restart: unless-stopped
+    networks:
+      - soar-test
+
+# Kalau n8n kamu juga jalan via docker-compose terpisah, hubungkan ke network
+# eksternal yang sama supaya n8n bisa panggil "http://checkpoint-mock:4010/..."
+# alih-alih "http://localhost:4010/...".
+networks:
+  soar-test:
+    driver: bridge
