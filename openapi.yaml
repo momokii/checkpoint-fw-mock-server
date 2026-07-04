@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Check Point Management API — Mock (untuk testing SOAR n8n)
-  version: "1.9-mock"
+  version: "2.0-mock"
   description: |
     **Ini BUKAN dokumentasi resmi Check Point.** Ini adalah spesifikasi OpenAPI dari
     mock server yang dibuat untuk testing pribadi. Skema field & alur kerja disusun
@@ -132,6 +132,75 @@ paths:
         "200": { description: OK }
         "404": { description: Tidak ditemukan }
 
+  /web_api/add-network:
+    post:
+      summary: |
+        Tambah objek Network — ALTERNATIF add-host untuk blokir satu IP (pakai mask
+        /32) ATAU untuk blokir subnet asli. Lihat komentar di server.js soal kapan
+        pakai host vs network.
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, subnet]
+              properties:
+                name: { type: string }
+                subnet: { type: string, example: "9.9.9.9" }
+                subnet-mask: { type: string, example: "255.255.255.255", description: "Untuk blokir 1 IP, pakai 255.255.255.255 (/32)" }
+                mask-length: { type: integer, example: 32, description: "Alternatif subnet-mask, format CIDR" }
+                comments: { type: string }
+      responses:
+        "200": { description: Network object dibuat }
+
+  /web_api/show-network:
+    post:
+      summary: Lihat detail Network object
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string } }
+      responses:
+        "200": { description: OK }
+        "404": { description: Tidak ditemukan }
+
+  /web_api/set-network:
+    post:
+      summary: Ubah Network object
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                subnet: { type: string }
+                subnet-mask: { type: string }
+                mask-length: { type: integer }
+      responses:
+        "200": { description: OK }
+
+  /web_api/delete-network:
+    post:
+      summary: Hapus Network object (opsional, untuk unblock IP kalau pakai pola network)
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties: { name: { type: string } }
+      responses:
+        "200": { description: OK }
+
   /web_api/add-dns-domain:
     post:
       summary: Tambah objek Domain (IOC tipe Domain)
@@ -144,9 +213,33 @@ paths:
               required: [name]
               properties:
                 name: { type: string, example: .malicious-domain.com }
+                is-sub-domain:
+                  type: boolean
+                  description: |
+                    VERIFIED dari modul Ansible resmi Check Point (cp_mgmt_dns_domain).
+                    true = domain ini DAN semua sub-domainnya ikut match (mis. blokir
+                    evil.com otomatis blokir mail.evil.com, www.evil.com juga).
+                    false/default = cuma hostname persis itu saja.
                 comments: { type: string }
       responses:
         "200": { description: Domain object dibuat }
+
+  /web_api/set-dns-domain:
+    post:
+      summary: Ubah objek Domain (mis. toggle is-sub-domain)
+      security: [{ sessionAuth: [] }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                is-sub-domain: { type: boolean }
+                comments: { type: string }
+      responses:
+        "200": { description: OK }
 
   /web_api/delete-dns-domain:
     post:

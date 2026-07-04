@@ -1,11 +1,18 @@
 /**
- * Check Point Management API — Mock Server v2 (untuk testing block/unblock IOC via SOAR n8n)
+ * Check Point Management API — Mock Server v4 (block/unblock IOC: IP & Domain)
  *
  * BUKAN produk resmi Check Point. Skema & perilaku disusun manual berdasarkan:
  *  - Management API Reference resmi: https://sc1.checkpoint.com/documents/latest/APIs/
  *  - sk120633 (Domain Objects R80.10+)
  *  - Konfirmasi pola JSON add/remove untuk set-group & set-access-rule dari thread resmi
  *    CheckMates (community.checkpoint.com), yang menunjukkan body request/response asli.
+ *  - CheckMates "Management API Versioning" (mekanisme unversioned=latest, versioned=pinned)
+ *  - CheckMates "R82 will be API version 2" (R82 = versi recommended saat ini = API v2.0)
+ *
+ * VERSI: Mock ini melaporkan api-server-version "2.0" (mengikuti R82, versi recommended
+ * Check Point saat ini). Versi sebelumnya di mock ini salah melaporkan "v1.9" (versi
+ * R81.20, sudah bukan latest). Lihat komentar di deklarasi API_VERSION untuk detail &
+ * batasan (mock ini TIDAK mengimplementasikan behavior berbeda per versi API).
  *
  * PENTING — batas kejujuran mock ini:
  *  Ini TIDAK dijamin "sama persis" dengan Management Server asli. Tidak ada cara untuk
@@ -38,7 +45,23 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 4010;
-const API_VERSION = "v1.9"; // dilaporkan di response login/session, bukan wajib di path
+// Versi yang dilaporkan di response login/show-session. R82 (rilis "recommended untuk
+// semua deployment" saat ini) = Management API v2.0 — dikonfirmasi dari CheckMates
+// "R82 will be API version 2" dan thread "...R81.20-v1.9 / R82-v2.0". Sebelumnya saya
+// pakai "v1.9" (versi R81.20) yang sudah bukan latest — dikoreksi di sini.
+//
+// KETERBATASAN JUJUR: mock ini TIDAK mengimplementasikan behavior berbeda per versi.
+// Baik kamu panggil /web_api/..., /web_api/v1.9/..., maupun /web_api/v2/..., responsnya
+// SAMA di mock ini. Di server asli, versi API bisa mempengaruhi format response atau
+// field yang tersedia untuk command tertentu (Check Point sendiri bilang "the behavior
+// of some commands may be changed in incompatible way" antar versi). Command yang saya
+// implementasikan di sini (host/dns-domain/group/access-rule/publish/install-policy)
+// TIDAK muncul di daftar perubahan v1.9->v2.0 yang saya temukan (yang berubah itu area
+// VSX provisioning, Maestro Security Group, CIFS, bandwidth Limit objects — di luar
+// scope mock ini) — jadi kemungkinan besar kontraknya sama, TAPI ini inferensi dari
+// ketiadaan bukti sebaliknya, bukan konfirmasi langsung dari dokumentasi v2.0 (halaman
+// dokumentasinya JS-rendered, saya tidak berhasil akses isinya untuk diff eksplisit).
+const API_VERSION = "2.0"; // dilaporkan di response login/session, bukan wajib di path
 
 // Router berisi semua command Check Point. Di-mount di DUA path sekaligus supaya
 // mock ini menerima kedua gaya pemanggilan nyata:
@@ -51,6 +74,7 @@ const sessions = new Map(); // sid -> { uid }
 const apiKeys = new Map([["test-api-key-12345", { uid: crypto.randomUUID() }]]); // pre-seeded
 
 const hosts = new Map(); // name -> { uid, name, ip-address, type }
+const networks = new Map(); // name -> { uid, name, subnet, subnet-mask/mask-length, type: 'network' }
 const dnsDomains = new Map(); // name -> { uid, name, type: 'dns-domain' }
 const groups = new Map(); // name -> { uid, name, members: [names], type: 'group' }
 const accessRules = new Map(); // name -> { uid, name, layer, source:[names], destination:[names], service:[names], action, enabled }
@@ -307,15 +331,92 @@ router.post("/delete-host", requireSession, (req, res) => {
   res.json({ message: "OK" });
 });
 
+// ================= NETWORK OBJECTS (alternatif add-host untuk IOC tipe IP) =================
+// Sumber verifikasi: modul Ansible resmi "check_point.mgmt.cp_mgmt_network".
+// CATATAN PENTING soal host vs network untuk blokir SATU IP (bukan subnet):
+//  - Thread CheckMates "Block ip address using api rest" (jawaban paling on-point utk
+//    kasus "blokir 1 IP via API") pakai add-host, BUKAN add-network.
+//  - TAPI beberapa tool komunitas (mis. IPaddressFeed2CheckPoint di GitHub) memang
+//    menghasilkan network objects untuk populate blocklist dari feed.
+//  - Admin Guide resmi: Host object TIDAK punya kemampuan routing/anti-spoofing;
+//    Network object didefinisikan oleh network-address + subnet-mask.
+//  Kesimpulan: add-host lebih umum direkomendasikan utk kasus "1 IP spesifik", tapi
+//  add-network dengan mask /32 (255.255.255.255) SECARA FUNGSIONAL match persis 1 IP
+//  yang sama di access rule. Command ini disediakan supaya kamu bisa test pola mana
+//  yang benar-benar dipakai sistem legacy-mu.
+
+router.post("/add-network", requireSession, (req, res) => {
+  const { name, subnet, "subnet-mask": subnetMask, "mask-length": maskLength, comments } = req.body || {};
+  if (!name || !subnet) {
+    return sendError(res, ERRORS.MISSING_PARAM("'name' and 'subnet' are required."));
+  }
+  if (!subnetMask && maskLength === undefined) {
+    return sendError(res, ERRORS.MISSING_PARAM("either 'subnet-mask' or 'mask-length' is required."));
+  }
+  if (networks.has(name)) {
+    return sendError(res, ERRORS.OBJECT_EXISTS(name));
+  }
+  const obj = {
+    uid: uid(),
+    name,
+    subnet,
+    "subnet-mask": subnetMask || null,
+    "mask-length": maskLength !== undefined ? maskLength : null,
+    type: "network",
+    comments: comments || "",
+  };
+  networks.set(name, obj);
+  pendingChanges++;
+  res.json(obj);
+});
+
+router.post("/show-network", requireSession, (req, res) => {
+  const obj = networks.get(req.body?.name);
+  if (!obj) return sendError(res, ERRORS.OBJECT_NOT_FOUND(req.body?.name));
+  res.json(obj);
+});
+
+router.post("/set-network", requireSession, (req, res) => {
+  const obj = networks.get(req.body?.name);
+  if (!obj) return sendError(res, ERRORS.OBJECT_NOT_FOUND(req.body?.name));
+  if (checkSimulatedLock(req, res, req.body.name)) return;
+  if (req.body.subnet !== undefined) obj.subnet = req.body.subnet;
+  if (req.body["subnet-mask"] !== undefined) obj["subnet-mask"] = req.body["subnet-mask"];
+  if (req.body["mask-length"] !== undefined) obj["mask-length"] = req.body["mask-length"];
+  pendingChanges++;
+  res.json(obj);
+});
+
+router.post("/delete-network", requireSession, (req, res) => {
+  const { name } = req.body || {};
+  if (!networks.has(name)) return sendError(res, ERRORS.OBJECT_NOT_FOUND(name));
+  networks.delete(name);
+  pendingChanges++;
+  res.json({ message: "OK" });
+});
+
 // ================= DNS DOMAIN OBJECTS (IOC tipe Domain) =================
+// Sumber verifikasi: Ansible "check_point.mgmt.cp_mgmt_dns_domain" module resmi
+// Check Point, dan konfirmasi langsung dari admin Check Point (PhoneBoy) di CheckMates
+// thread "mgmt_cli: Creation of Multiple Domain Objects" soal urutan add-dns-domain ->
+// add-group -> set-group.
 
 router.post("/add-dns-domain", requireSession, (req, res) => {
-  const { name, comments } = req.body || {};
+  const { name, comments, "is-sub-domain": isSubDomain } = req.body || {};
   if (!name) return sendError(res, ERRORS.MISSING_PARAM("'name' is required."));
   if (dnsDomains.has(name)) {
     return sendError(res, ERRORS.OBJECT_EXISTS(name));
   }
-  const obj = { uid: uid(), name, type: "dns-domain", comments: comments || "" };
+  // is-sub-domain: VERIFIED (dari modul Ansible resmi). true = domain ini DAN semua
+  // sub-domain di bawahnya ikut match (mis. blokir evil.com otomatis blokir juga
+  // mail.evil.com, www.evil.com). false/default = cuma hostname persis itu saja.
+  const obj = {
+    uid: uid(),
+    name,
+    type: "dns-domain",
+    comments: comments || "",
+    "is-sub-domain": isSubDomain === true,
+  };
   dnsDomains.set(name, obj);
   pendingChanges++;
   res.json(obj);
@@ -324,6 +425,16 @@ router.post("/add-dns-domain", requireSession, (req, res) => {
 router.post("/show-dns-domain", requireSession, (req, res) => {
   const obj = dnsDomains.get(req.body?.name);
   if (!obj) return sendError(res, ERRORS.OBJECT_NOT_FOUND(req.body?.name));
+  res.json(obj);
+});
+
+router.post("/set-dns-domain", requireSession, (req, res) => {
+  const obj = dnsDomains.get(req.body?.name);
+  if (!obj) return sendError(res, ERRORS.OBJECT_NOT_FOUND(req.body?.name));
+  if (checkSimulatedLock(req, res, req.body.name)) return;
+  if (req.body["is-sub-domain"] !== undefined) obj["is-sub-domain"] = req.body["is-sub-domain"] === true;
+  if (req.body.comments !== undefined) obj.comments = req.body.comments;
+  pendingChanges++;
   res.json(obj);
 });
 
@@ -336,6 +447,7 @@ router.post("/delete-dns-domain", requireSession, (req, res) => {
   pendingChanges++;
   res.json({ message: "OK" });
 });
+
 
 // ================= GROUP OBJECTS =================
 
@@ -521,7 +633,29 @@ let swaggerReady = false;
 if (fs.existsSync(openapiPath)) {
   try {
     const openapiDoc = YAML.load(fs.readFileSync(openapiPath, "utf8"));
-    app.get("/openapi.yaml", (req, res) => res.sendFile(openapiPath));
+
+    // ---------- Dynamic server injection ----------
+    // Default server di openapi.yaml itu statis (http://localhost:4010). Kalau mock
+    // ini di-deploy di tempat lain (Docker network internal, di belakang reverse
+    // proxy, di-expose lewat ngrok, dst), URL localhost itu tidak relevan buat
+    // "Try it out" di Swagger UI. Solusinya: baca dari env var MOCK_SERVER_URL kalau
+    // diisi, dan taruh sebagai entry PERTAMA (jadi default terpilih di dropdown
+    // Swagger UI) — tanpa mengubah file openapi.yaml itu sendiri.
+    const dynamicServerUrl = process.env.MOCK_SERVER_URL;
+    if (dynamicServerUrl) {
+      openapiDoc.servers = [
+        { url: dynamicServerUrl, description: "Dari environment variable MOCK_SERVER_URL" },
+        ...(openapiDoc.servers || []),
+      ];
+      console.log(`[SWAGGER] MOCK_SERVER_URL terdeteksi, server ditambahkan: ${dynamicServerUrl}`);
+    }
+
+    // PENTING: /openapi.yaml serve dari openapiDoc yang SUDAH dimutasi (bukan
+    // res.sendFile file mentah) — supaya raw spec dan tampilan Swagger UI konsisten,
+    // sama-sama mencerminkan server dinamis di atas kalau env var diisi.
+    app.get("/openapi.yaml", (req, res) => {
+      res.type("text/yaml").send(YAML.dump(openapiDoc));
+    });
     app.use("/docs", swaggerUi.serve, swaggerUi.setup(openapiDoc));
     swaggerReady = true;
   } catch (err) {

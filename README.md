@@ -1,7 +1,77 @@
-# Check Point Management API — Mock Server v3 (block/unblock IOC: IP & Domain)
+# Check Point Management API — Mock Server v4 (block/unblock IOC: IP & Domain)
 
 Mock server untuk testing workflow SOAR di n8n saat kamu tidak punya akses ke Check
 Point Management Server sungguhan. **Bukan produk resmi Check Point.**
+
+## Koreksi v6: host vs network untuk blokir IP — sudah dianalisis, keduanya didukung
+
+Sempat ditanya kenapa block IP pakai `add-host`, bukan `add-network` seperti di data
+legacy. Hasil analisis:
+
+- Thread CheckMates **"Block ip address using api rest"** (jawaban paling on-point utk
+  kasus "blokir 1 IP via API") pakai `add-host` — **bukan** `add-network`.
+- Tapi ditemukan juga tool komunitas (`IPaddressFeed2CheckPoint` di GitHub) yang
+  menghasilkan **network objects** untuk populate blocklist dari feed IP.
+- Beda teknis (dari Admin Guide resmi): Host object **tidak punya** kemampuan
+  routing/anti-spoofing (murni representasi satu endpoint). Network object
+  didefinisikan oleh network-address + subnet-mask (representasi sebuah *network*).
+- Kesimpulan: `add-host` lebih umum direkomendasikan spesifik untuk kasus "1 IP",
+  tapi `add-network` dengan mask `/32` (`255.255.255.255`) **secara fungsional**
+  match persis 1 IP yang sama di access rule — bukan salah, cuma beda representasi.
+  Tidak bisa dipastikan tanpa lihat legacy code langsung kenapa sistem lama pakai
+  yang mana.
+
+**Mock ini sekarang mendukung KEDUANYA** — `add-network`/`show-network`/`set-network`/
+`delete-network` (parameter `subnet` + `subnet-mask` atau `mask-length`, VERIFIED dari
+modul Ansible resmi `cp_mgmt_network`) ditambahkan sebagai alternatif `add-host`. Pakai
+yang mana saja sesuai yang benar-benar dipanggil legacy-mu.
+
+## Koreksi v5: verifikasi ulang flow domain, tambah parameter `is-sub-domain`
+
+Sempat ditanya ulang apakah urutan `add-dns-domain` → `set-group` untuk block domain
+itu benar. Sekarang punya sumber yang jauh lebih kuat dari sebelumnya: **admin resmi
+Check Point (PhoneBoy) di CheckMates thread "mgmt_cli: Creation of Multiple Domain
+Objects"** secara eksplisit menjelaskan urutan API domain object:
+`add-dns-domain` (buat objek) → `add-group` (kalau group belum ada) → `set-group`
+(tambah member). Ini mengkonfirmasi urutan yang sudah diimplementasikan di mock ini.
+
+Juga ditemukan (dari modul Ansible resmi `check_point.mgmt.cp_mgmt_dns_domain`)
+parameter **`is-sub-domain`** yang sebelumnya tidak diimplementasikan di mock ini:
+`true` = domain tsb DAN semua sub-domainnya ikut match (blokir `evil.com` otomatis
+blokir `mail.evil.com`, `www.evil.com`); `false`/default = cuma hostname persis itu
+saja. Ini relevan untuk keputusan blocking SOC — sudah ditambahkan ke `add-dns-domain`
+dan `set-dns-domain` (command terakhir ini juga baru ditambahkan, sebelumnya belum ada).
+
+**Catatan penting soal istilah**: ada command LAIN bernama `add-domain` (tanpa "dns")
+yang TIDAK BERHUBUNGAN — itu untuk administrative domain di Multi-Domain Security
+Management (MDS), konsep multi-tenancy Check Point, bukan untuk DNS domain object
+buat firewall rule. Jangan tertukar kalau riset sendiri ke dokumentasi Check Point.
+
+## Koreksi v4: versi API yang dilaporkan (v1.9 → 2.0)
+
+Mock ini sebelumnya melaporkan `"api-server-version": "v1.9"` di response login —
+itu versi R81.20, **bukan latest**. Setelah dicek: **R82 adalah versi "recommended
+untuk semua deployment" saat ini** (sk173903), dan R82 = **Management API v2.0**
+(dikonfirmasi dari CheckMates: "R82 will be API version 2"). Mock ini sekarang
+melaporkan `"2.0"`.
+
+**Mekanisme versioning di path** (yang sudah diimplementasikan sejak v3) ternyata
+justru **dikonfirmasi resmi** oleh dokumentasi CheckMates "Management API Versioning":
+tanpa version di path = pakai versi terbaru; dengan version eksplisit (`/web_api/v1/...`)
+= dikunci ke versi itu untuk backward compatibility. Jadi arsitektur routing mock ini
+sudah benar, cuma angka versi yang dilaporkan yang perlu dikoreksi.
+
+**Batasan yang harus kamu sadari**: mock ini **tidak** mengimplementasikan behavior
+berbeda antar versi API — baik kamu panggil tanpa version, `v1.9`, atau `v2`, semua
+diproses SAMA oleh mock ini. Check Point sendiri mengakui *"the behavior of some
+commands may be changed in incompatible way"* antar versi mayor. Saya cek daftar
+perubahan v1.9→v2.0 yang saya temukan (VSX provisioning, Maestro Security Group,
+CIFS resource, bandwidth Limit objects) — **tidak ada yang menyentuh command yang
+diimplementasikan di mock ini** (host/dns-domain/group/access-rule/publish/
+install-policy), jadi kemungkinan besar kontraknya tetap sama. Tapi ini **inferensi
+dari ketiadaan bukti sebaliknya**, bukan konfirmasi langsung — saya tidak berhasil
+mengakses isi lengkap dokumentasi API v2.0 (halamannya di-render via JavaScript,
+tidak bisa saya fetch isinya untuk diff eksplisit per-command).
 
 ## Koreksi v3 (setelah cek ulang data legacy)
 
@@ -89,6 +159,33 @@ semua command, bukan login ulang di setiap call. Mock ini akan balikin
 `generic_err_too_many_requests` kalau `/login` dipanggil lebih dari 3x dalam 5 detik —
 supaya kamu bisa ketahuan kalau workflow n8n-mu punya anti-pattern "login di setiap
 iterasi loop block/unblock" alih-alih login sekali di awal.
+
+## Server dinamis di Swagger UI (`MOCK_SERVER_URL`)
+
+Default-nya, Swagger UI (`/docs`) dan `/openapi.yaml` menunjukkan `http://localhost:4010`
+sebagai server — sesuai isi `openapi.yaml`. Kalau mock ini diakses dari tempat lain
+(mis. n8n di container Docker lain yang manggil lewat hostname `checkpoint-mock`, atau
+di-expose lewat reverse proxy/ngrok), `localhost` itu tidak relevan buat fitur
+"Try it out" di Swagger UI.
+
+Set environment variable `MOCK_SERVER_URL` untuk menambahkan server itu sebagai pilihan
+**pertama/default** di dropdown Swagger UI, tanpa perlu edit `openapi.yaml`:
+
+```bash
+MOCK_SERVER_URL=http://checkpoint-mock:4010 node server.js
+```
+
+Atau di `docker-compose.yml` (lihat komentar di file itu, tinggal uncomment):
+
+```yaml
+environment:
+  - MOCK_SERVER_URL=http://checkpoint-mock:4010
+```
+
+`localhost:4010` tetap ada sebagai pilihan kedua di dropdown — env var ini menambahkan,
+bukan menggantikan. `/openapi.yaml` (raw spec) juga otomatis konsisten dengan apa yang
+ditampilkan di `/docs`, karena keduanya di-generate dari objek yang sama di memori,
+bukan dari file statis.
 
 ## Menjalankan
 
