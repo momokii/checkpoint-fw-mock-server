@@ -3,6 +3,44 @@
 Mock server untuk testing workflow SOAR di n8n saat kamu tidak punya akses ke Check
 Point Management Server sungguhan. **Bukan produk resmi Check Point.**
 
+## Koreksi v8: `targets` boleh string ATAU array (bukan cuma array)
+
+User menunjukkan screenshot dokumentasi resmi `mgmt_cli install-policy` langsung dari
+sc1.checkpoint.com yang eksplisit menyebut `targets` bisa berupa **string ATAU List:
+string** — bukan cuma array seperti yang saya validasi di v7. Kode sebelumnya
+menolak (`generic_err_missing_param`) kalau `targets` dikirim sebagai string tunggal
+tanpa dibungkus array — ini **terlalu ketat**, sudah dikoreksi. Mock sekarang
+menerima keduanya dan menormalisasi ke array secara internal.
+
+Dokumentasi resmi itu juga mengungkap parameter tambahan yang belum diimplementasi
+penuh di mock ini: `desktop-security`, `qos`, `install-on-all-cluster-members-or-fail`,
+`prepare-only`, `revision` — semua diterima (tidak akan error kalau dikirim) tapi
+belum mempengaruhi behavior task, karena di luar fokus utama block/unblock IOC.
+
+**Catatan penting soal deployment**: kalau kamu masih dapat error yang menyebut
+`target-name` (bukan `targets`), itu tandanya server yang kamu jalankan **belum**
+di-rebuild dari kode terbaru — bukan bug baru. Field `target-name` sudah dihapus
+total dari kode sejak koreksi v7.
+
+## Koreksi v7: parameter install-policy yang benar (`targets` array, bukan `target-name`)
+
+Mock ini sebelumnya pakai `target-name` (string tunggal) untuk `install-policy` —
+**itu saya karang sendiri, bukan hasil verifikasi**. Setelah dicek ke dokumentasi
+resmi Terraform provider Check Point + contoh CLI resmi CheckMates, parameter yang
+benar adalah:
+
+- `targets` — **array** nama gateway/cluster, bukan string tunggal. Didokumentasikan
+  "required" di reference v1.8.1, tapi **empirically ditemukan opsional** (laporan
+  pengguna nyata di CheckMates) — kalau tidak diisi/kosong, policy ter-install ke
+  SEMUA gateway di policy package itu.
+- `access` — boolean opsional (install Access Control policy)
+- `threat-prevention` — boolean opsional
+
+Mock ini sekarang menerima `targets` sebagai array (boleh kosong `[]` atau tidak
+dikirim sama sekali — keduanya mensimulasikan "install ke semua gateway"), plus
+`access`/`threat-prevention` sebagai boolean opsional. Kalau `targets` dikirim tapi
+bukan array, mock akan menolak dengan error (`generic_err_missing_param`).
+
 ## Koreksi v6: host vs network untuk blokir IP — sudah dianalisis, keduanya didukung
 
 Sempat ditanya kenapa block IP pakai `add-host`, bukan `add-network` seperti di data
@@ -217,7 +255,7 @@ docker compose up --build -d
 2. `POST /web_api/add-host` — `{"name":"Malicious_1.2.3.4","ip-address":"1.2.3.4"}`
 3. `POST /web_api/set-access-rule` — `{"name":"Blocked_IPs_Rule","source":{"add":["Malicious_1.2.3.4"]}}`
 4. `POST /web_api/publish`
-5. `POST /web_api/install-policy` — `{"policy-package":"Standard","target-name":"gw-cluster-1"}` → simpan `task-id`
+5. `POST /web_api/install-policy` — `{"policy-package":"Standard","access":true,"threat-prevention":true,"targets":["gw-cluster-1"]}` → simpan `task-id`
 6. `POST /web_api/show-task` berulang (pakai n8n Wait + IF node) sampai `status: "succeeded"`
 
 ## Flow UNBLOCK IP

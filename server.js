@@ -550,13 +550,43 @@ router.post("/publish", requireSession, (req, res) => {
   res.json({ "task-id": taskId });
 });
 
+// install-policy — parameter VERIFIED dari dokumentasi resmi mgmt_cli install-policy
+// (screenshot langsung dari sc1.checkpoint.com Arguments table):
+//   policy-package (string, Required)
+//   targets (string ATAU List: string -- boleh salah satu, keduanya valid)
+//   access (boolean, default: tergantung apakah Access Control policy enabled di package)
+//   desktop-security (boolean, default: tergantung apakah Desktop Security enabled)
+//   qos (boolean, default: tergantung apakah QoS enabled)
+//   threat-prevention (boolean, default: tergantung apakah Threat Prevention enabled)
+//   install-on-all-cluster-members-or-fail (boolean, default: true)
+//   prepare-only (boolean, default: false)
+//   revision (string, default: revisi terbaru)
+// Field terakhir 5 (desktop-security, qos, install-on-all-cluster-members-or-fail,
+// prepare-only, revision) diterima mock ini (tidak akan error kalau dikirim) tapi
+// belum mempengaruhi behavior task -- di luar fokus utama block/unblock IOC.
+//
+// Sebelumnya mock ini pakai "target-name" (string tunggal, SAYA KARANG SENDIRI) lalu
+// direvisi jadi "targets" tapi HANYA menerima array (terlalu ketat) -- sekarang
+// dikoreksi lagi supaya terima string ATAU array, sesuai docs resmi di atas.
 router.post("/install-policy", requireSession, (req, res) => {
-  const { "policy-package": pkg, "target-name": target } = req.body || {};
-  if (!pkg || !target) {
-    return sendError(res, ERRORS.MISSING_PARAM("'policy-package' and 'target-name' are required."));
+  const { "policy-package": pkg, targets, access, "threat-prevention": threatPrevention } = req.body || {};
+  if (!pkg) {
+    return sendError(res, ERRORS.MISSING_PARAM("'policy-package' is required."));
   }
+  if (targets !== undefined && typeof targets !== "string" && !Array.isArray(targets)) {
+    return sendError(res, ERRORS.MISSING_PARAM("'targets' must be a string or an array of gateway names."));
+  }
+  // Normalisasi ke array secara internal, apapun bentuk inputnya
+  const normalizedTargets = targets === undefined ? [] : Array.isArray(targets) ? targets : [targets];
   const taskId = uid();
-  tasks.set(taskId, { status: "in progress", pollCount: 0, kind: "install-policy" });
+  tasks.set(taskId, {
+    status: "in progress",
+    pollCount: 0,
+    kind: "install-policy",
+    targets: normalizedTargets.length > 0 ? normalizedTargets : "ALL_GATEWAYS_IN_PACKAGE", // meniru perilaku empiris: kosong = install ke semua
+    access: access !== undefined ? access : true,
+    "threat-prevention": threatPrevention !== undefined ? threatPrevention : true,
+  });
   res.json({ "task-id": taskId });
 });
 

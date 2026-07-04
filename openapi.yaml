@@ -412,16 +412,33 @@ paths:
   /web_api/install-policy:
     post:
       summary: Install policy ke gateway (ASYNCHRONOUS — harus di-poll via show-task)
+      description: |
+        VERIFIED dari dokumentasi resmi Terraform provider Check Point + contoh CLI
+        resmi CheckMates. `targets` didokumentasikan "required" tapi empirically
+        ditemukan opsional (kosong/tidak dikirim = install ke semua gateway di
+        policy package).
       security: [{ sessionAuth: [] }]
       requestBody:
         content:
           application/json:
             schema:
               type: object
-              required: [policy-package, target-name]
+              required: [policy-package]
               properties:
                 policy-package: { type: string, example: Standard }
-                target-name: { type: string, example: gw-cluster-1 }
+                targets:
+                  oneOf:
+                    - type: string
+                    - type: array
+                      items: { type: string }
+                  example: ["gw-cluster-1"]
+                  description: "String tunggal ATAU array nama gateway/cluster (VERIFIED dari docs resmi mgmt_cli install-policy — keduanya valid). Kosong/tidak dikirim = install ke semua gateway di policy package."
+                access: { type: boolean, description: "Install Access Control policy", default: true }
+                threat-prevention: { type: boolean, description: "Install Threat Prevention policy", default: true }
+                desktop-security: { type: boolean, description: "Diterima mock, belum mempengaruhi behavior task" }
+                qos: { type: boolean, description: "Diterima mock, belum mempengaruhi behavior task" }
+                prepare-only: { type: boolean, description: "Diterima mock, belum mempengaruhi behavior task" }
+                revision: { type: string, description: "Diterima mock, belum mempengaruhi behavior task" }
       responses:
         "200":
           description: Task-id install-policy (belum selesai, harus di-poll)
